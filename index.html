@@ -148,20 +148,14 @@
       </div>
       <div class="stats-row">
         <div class="stat-box"><div class="stat-label">Clients Found</div><div class="stat-value gold" id="statClients">—</div></div>
-        <div class="stat-box"><div class="stat-label">Total Jan-2026 Sales</div><div class="stat-value" id="statTotal">—</div></div>
+        <div class="stat-box"><div class="stat-label" id="statTotalLabel">Total (last month) Sales</div><div class="stat-value" id="statTotal">—</div></div>
         <div class="stat-box"><div class="stat-label">▲ Up &nbsp;/&nbsp; ▼ Down</div><div class="stat-value" id="statTrend">—</div></div>
       </div>
       <div class="preview-section">
         <div class="preview-label">Preview — Top 5 Clients by Average Sales</div>
         <div class="table-wrap">
           <table>
-            <thead><tr>
-              <th>Client</th><th>Code</th>
-              <th style="text-align:right">Oct-25</th><th style="text-align:right">Nov-25</th>
-              <th style="text-align:right">Dec-25</th><th style="text-align:right">Jan-26</th>
-              <th style="text-align:right">Average</th><th style="text-align:right">Last Month</th>
-              <th style="text-align:center">Trend %</th><th style="text-align:center">Direction</th>
-            </tr></thead>
+            <thead><tr id="previewHead"><th>Client</th><th>Code</th></tr></thead>
             <tbody id="previewBody"></tbody>
           </table>
         </div>
@@ -198,9 +192,29 @@
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
   }
 
-  const MONTHS = ['10-2025','11-2025','12-2025','01-2026'];
+  const DEFAULT_MONTHS = ['10-2025','11-2025','12-2025','01-2026'];
   const EXCLUDE = ['TRU Funding','Client Analysis','As Of','Printed'];
   const CLIENT_RE = /^(.+?)\s+\(([A-Z0-9]+)\)\s*$/;
+
+  /** Match "MM-YYYY" followed by a sales number; extract ordered unique months from report text. */
+  function extractMonthsFromText(text) {
+    const seen = new Set();
+    const out = [];
+    const re = /(\d{1,2}-\d{4})\s+[\d,]+\.\d+/g;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      const key = m[1];
+      if (!seen.has(key)) { seen.add(key); out.push(key); }
+    }
+    return out.length ? out : DEFAULT_MONTHS.slice();
+  }
+
+  /** 1-based column index to Excel letter (1 -> A, 27 -> AA). */
+  function colLetter(n) {
+    let s = '';
+    for (; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + (n - 1) % 26) + s;
+    return s;
+  }
 
   /**
    * Extract text from a single PDF page using PDF.js getTextContent.
@@ -226,12 +240,13 @@
   }
 
   /**
-   * Parse PDF arrayBuffer and return array of { name, code, sales } (same shape as Python).
+   * Parse PDF arrayBuffer; detect months from report. Returns { clients, months }.
    */
   async function parsePDF(arrayBuffer) {
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     const numPages = pdf.numPages;
     const clients = [];
+    let detectedMonths = null;
 
     for (let p = 1; p <= numPages; p++) {
       const page = await pdf.getPage(p);
@@ -251,8 +266,11 @@
       }
       if (!clientName) continue;
 
+      if (detectedMonths === null) detectedMonths = extractMonthsFromText(text);
+      const monthsToUse = detectedMonths;
+
       const sales = {};
-      for (const month of MONTHS) {
+      for (const month of monthsToUse) {
         const escaped = month.replace(/-/g, '\\-');
         const re = new RegExp(escaped + '\\s+([\\d,]+\\.\\d+)');
         const match = text.match(re);
@@ -260,15 +278,19 @@
       }
       clients.push({ name: clientName, code: clientCode, sales });
     }
-    return clients;
+    return { clients, months: detectedMonths || DEFAULT_MONTHS.slice() };
   }
 
   /**
-   * Build Excel workbook (ExcelJS) with two sheets — mirrors Python build_excel.
+   * Build Excel workbook (ExcelJS). Uses months from report for dynamic columns/labels.
    */
-  async function buildExcel(clients) {
+  async function buildExcel(clients, months) {
     const ExcelJS = window.ExcelJS;
     if (!ExcelJS) throw new Error('ExcelJS not loaded');
+    const n = months.length;
+    const nCol = 3 + n + 4; // #, Name, Code, n months, Average, Last Month, Trend, Direction
+    const lastDataCol = 5 + n; // columns to sum in totals (months + avg + last)
+
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Client Sales Analysis', { views: [{ state: 'frozen', ySplit: 4, xSplit: 3 }] });
 
@@ -278,24 +300,24 @@
     const moneyFmt = '$#,##0.00';
     const thin = { style: 'thin', color: { argb: 'FFCCCCCC' } };
 
-    // Title
-    ws.mergeCells('A1:K1');
+    const hdrs = ['#','Client Name','Code', ...months, 'Average Sales','Last Month','Trend %','Direction'];
+    const colW = [5, 32, 10, ...Array(n).fill(13), 15, 14, 12, 12];
+
+    ws.mergeCells('A1:' + colLetter(nCol) + '1');
     ws.getCell('A1').value = 'TRU Funding LLC — Client Sales Analysis';
     ws.getCell('A1').font = { name: 'Arial', bold: true, size: 14, color: { argb: 'FF' + NAVY } };
     ws.getCell('A1').alignment = { horizontal: 'center', vertical: 'middle' };
     ws.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF3FB' } };
     ws.getRow(1).height = 32;
 
-    ws.mergeCells('A2:K2');
-    ws.getCell('A2').value = 'As of October 31, 2025  ·  Printed: ' + new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    ws.mergeCells('A2:' + colLetter(nCol) + '2');
+    ws.getCell('A2').value = 'Printed: ' + new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
     ws.getCell('A2').font = { name: 'Arial', italic: true, size: 9, color: { argb: 'FF666666' } };
     ws.getCell('A2').alignment = { horizontal: 'center', vertical: 'middle' };
     ws.getCell('A2').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7FBFF' } };
     ws.getRow(2).height = 16;
     ws.getRow(3).height = 8;
 
-    const hdrs = ['#','Client Name','Code','Oct-2025','Nov-2025','Dec-2025','Jan-2026','Average Sales','Last Month','Trend %','Direction'];
-    const colW = [5,32,10,13,13,13,13,15,14,12,12];
     hdrs.forEach((h, i) => {
       const c = ws.getCell(4, i + 1);
       c.value = h;
@@ -307,19 +329,28 @@
     ws.getRow(4).height = 28;
     colW.forEach((w, i) => { ws.getColumn(i + 1).width = w; });
 
+    const firstMonthCol = 4;
+    const avgCol = 4 + n;
+    const lastCol = 5 + n;
+    const trendCol = 6 + n;
+    const dirCol = 7 + n;
+    const rangeStart = colLetter(firstMonthCol);
+    const rangeEnd = colLetter(4 + n - 1);
+
     clients.forEach((client, i) => {
       const row = i + 5;
       const alt = i % 2 === 0 ? LGR : WHITE;
       const s = client.sales;
-      const vals = MONTHS.map(m => s[m] || 0);
-      const jan = vals[3];
-      const prev = vals[2] > 0 ? vals[2] : (vals[1] > 0 ? vals[1] : vals[0]);
+      const vals = months.map(m => s[m] || 0);
+      const lastVal = vals[n - 1];
+      let prev = 0;
+      for (let j = n - 2; j >= 0; j--) { if (vals[j] > 0) { prev = vals[j]; break; } }
       let df = FL_F, dc = FL_C, arrow = '► FLAT';
       if (prev > 0) {
-        if (jan > prev) { df = UP_F; dc = UP_C; arrow = '▲ UP'; }
-        else if (jan < prev) { df = DN_F; dc = DN_C; arrow = '▼ DOWN'; }
+        if (lastVal > prev) { df = UP_F; dc = UP_C; arrow = '▲ UP'; }
+        else if (lastVal < prev) { df = DN_F; dc = DN_C; arrow = '▼ DOWN'; }
       }
-      const trend = prev > 0 ? (jan - prev) / prev : 0;
+      const trend = prev > 0 ? (lastVal - prev) / prev : 0;
 
       const setCell = (col, val, bg, opts = {}) => {
         const c = ws.getCell(row, col);
@@ -334,23 +365,23 @@
       setCell(1, i + 1, alt, { horizontal: 'center' });
       setCell(2, client.name, alt);
       setCell(3, client.code, alt, { horizontal: 'center' });
-      [4,5,6,7].forEach((col, ci) => setCell(col, vals[ci], alt, { numFmt: moneyFmt, horizontal: 'right' }));
-      const avgCell = ws.getCell(row, 8);
-      avgCell.value = { formula: `AVERAGE(D${row}:G${row})` };
+      for (let ci = 0; ci < n; ci++) setCell(firstMonthCol + ci, vals[ci], alt, { numFmt: moneyFmt, horizontal: 'right' });
+      const avgCell = ws.getCell(row, avgCol);
+      avgCell.value = { formula: `AVERAGE(${rangeStart}${row}:${rangeEnd}${row})` };
       avgCell.font = { name: 'Arial', size: 10 };
       avgCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + LB } };
       avgCell.alignment = { horizontal: 'right', vertical: 'middle' };
       avgCell.border = { top: thin, left: thin, bottom: thin, right: thin };
       avgCell.numFmt = moneyFmt;
-      const lastCell = ws.getCell(row, 9);
-      lastCell.value = { formula: `G${row}` };
+      const lastCell = ws.getCell(row, lastCol);
+      lastCell.value = { formula: `${rangeEnd}${row}` };
       lastCell.font = { name: 'Arial', size: 10 };
       lastCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + LG } };
       lastCell.alignment = { horizontal: 'right', vertical: 'middle' };
       lastCell.border = { top: thin, left: thin, bottom: thin, right: thin };
       lastCell.numFmt = moneyFmt;
-      setCell(10, trend, df, { bold: true, color: dc, numFmt: '+0.0%;-0.0%;0.0%', horizontal: 'center' });
-      setCell(11, arrow, df, { bold: true, color: dc, horizontal: 'center' });
+      setCell(trendCol, trend, df, { bold: true, color: dc, numFmt: '+0.0%;-0.0%;0.0%', horizontal: 'center' });
+      setCell(dirCol, arrow, df, { bold: true, color: dc, horizontal: 'center' });
       ws.getRow(row).height = 18;
     });
 
@@ -362,16 +393,15 @@
     totCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + BLUE } };
     totCell.alignment = { horizontal: 'center', vertical: 'middle' };
     totCell.border = { top: thin, left: thin, bottom: thin, right: thin };
-    ['D','E','F','G','H','I','J','K'].forEach((col, idx) => {
-      const ci = 4 + idx;
+    for (let ci = 4; ci <= nCol; ci++) {
       const c = ws.getCell(tr, ci);
-      c.value = ci <= 9 ? { formula: `SUM(${col}5:${col}${tr - 1})` } : '';
+      c.value = ci <= lastDataCol ? { formula: `SUM(${colLetter(ci)}5:${colLetter(ci)}${tr - 1})` } : '';
       c.font = { name: 'Arial', bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
       c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + BLUE } };
       c.alignment = { horizontal: 'right', vertical: 'middle' };
       c.border = { top: thin, left: thin, bottom: thin, right: thin };
-      if (ci <= 9) c.numFmt = moneyFmt;
-    });
+      if (ci <= lastDataCol) c.numFmt = moneyFmt;
+    }
     ws.getRow(tr).height = 22;
 
     // Sheet 2 — Trend Summary
@@ -382,7 +412,8 @@
     ws2.getCell('A1').alignment = { horizontal: 'center', vertical: 'middle' };
     ws2.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF3FB' } };
     ws2.getRow(1).height = 26;
-    ['Rank','Client','Code','Average Sales','Jan-2026 Sales','vs Prev Month','Direction'].forEach((h, i) => {
+    const lastMonthLabel = months.length ? months[months.length - 1] : 'Last';
+    ['Rank','Client','Code','Average Sales', lastMonthLabel + ' Sales','vs Prev Month','Direction'].forEach((h, i) => {
       const c = ws2.getCell(2, i + 1);
       c.value = h;
       c.font = { name: 'Arial', bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
@@ -393,19 +424,20 @@
     ws2.getRow(2).height = 22;
     [6,35,10,16,16,14,12].forEach((w, i) => { ws2.getColumn(i + 1).width = w; });
 
-    const sortedC = [...clients].sort((a, b) => (MONTHS.reduce((sum, m) => sum + (b.sales[m] || 0), 0) / 4) - (MONTHS.reduce((sum, m) => sum + (a.sales[m] || 0), 0) / 4));
+    const sortedC = [...clients].sort((a, b) => (months.reduce((sum, m) => sum + (b.sales[m] || 0), 0) / n) - (months.reduce((sum, m) => sum + (a.sales[m] || 0), 0) / n));
     sortedC.forEach((client, i) => {
       const row = i + 3;
       const alt = i % 2 === 0 ? LGR : WHITE;
       const s = client.sales;
-      const vals = MONTHS.map(m => s[m] || 0);
-      const avg = vals.reduce((a, b) => a + b, 0) / 4;
-      const jan = vals[3];
-      const prev = vals[2] > 0 ? vals[2] : (vals[1] > 0 ? vals[1] : vals[0]);
-      const trend = prev > 0 ? (jan - prev) / prev : 0;
+      const vals = months.map(m => s[m] || 0);
+      const avg = vals.reduce((a, b) => a + b, 0) / n;
+      const lastVal = vals[n - 1];
+      let prev = 0;
+      for (let j = n - 2; j >= 0; j--) { if (vals[j] > 0) { prev = vals[j]; break; } }
+      const trend = prev > 0 ? (lastVal - prev) / prev : 0;
       let df = FL_F, dc = FL_C, arrow = '► FLAT';
       if (prev > 0) {
-        if (jan > prev) { df = UP_F; dc = UP_C; arrow = '▲ UP'; }
+        if (lastVal > prev) { df = UP_F; dc = UP_C; arrow = '▲ UP'; }
         else { df = DN_F; dc = DN_C; arrow = '▼ DOWN'; }
       }
       const set2 = (col, val, bg, opts = {}) => {
@@ -421,7 +453,7 @@
       set2(2, client.name, alt);
       set2(3, client.code, alt, { horizontal: 'center' });
       set2(4, avg, LB, { numFmt: moneyFmt, horizontal: 'right' });
-      set2(5, jan, LG, { numFmt: moneyFmt, horizontal: 'right' });
+      set2(5, lastVal, LG, { numFmt: moneyFmt, horizontal: 'right' });
       set2(6, trend, df, { bold: true, color: dc, numFmt: '+0.0%;-0.0%;0.0%', horizontal: 'center' });
       set2(7, arrow, df, { bold: true, color: dc, horizontal: 'center' });
       ws2.getRow(row).height = 18;
@@ -501,41 +533,47 @@
 
     setProgress(20, 'Parsing PDF in browser…');
     log('Extracting client data…');
-    let clients;
+    let clients, months;
     try {
-      clients = await parsePDF(arrayBuffer);
+      const result = await parsePDF(arrayBuffer);
+      clients = result.clients;
+      months = result.months;
     } catch (err) {
       log('PDF error: ' + err.message, 'err');
       setProgress(100, 'Error');
       return;
     }
 
-    const janTotal = clients.reduce((sum, c) => sum + (c.sales['01-2026'] || 0), 0);
+    const n = months.length;
+    const lastMonth = n ? months[n - 1] : '';
+    const lastMonthTotal = clients.reduce((sum, c) => sum + (c.sales[lastMonth] || 0), 0);
     let upCount = 0, downCount = 0;
     clients.forEach(c => {
-      const vals = MONTHS.map(m => c.sales[m] || 0);
-      const jan = vals[3];
-      const prev = vals[2] > 0 ? vals[2] : (vals[1] > 0 ? vals[1] : vals[0]);
-      if (prev > 0) { if (jan > prev) upCount++; else if (jan < prev) downCount++; }
+      const vals = months.map(m => c.sales[m] || 0);
+      const lastVal = vals[n - 1];
+      let prev = 0;
+      for (let j = n - 2; j >= 0; j--) { if (vals[j] > 0) { prev = vals[j]; break; } }
+      if (prev > 0) { if (lastVal > prev) upCount++; else if (lastVal < prev) downCount++; }
     });
 
-    const sortedC = [...clients].sort((a, b) => (MONTHS.reduce((s, m) => s + (b.sales[m] || 0), 0) / 4) - (MONTHS.reduce((s, m) => s + (a.sales[m] || 0), 0) / 4));
+    const sortedC = [...clients].sort((a, b) => (months.reduce((s, m) => s + (b.sales[m] || 0), 0) / n) - (months.reduce((s, m) => s + (a.sales[m] || 0), 0) / n));
     const preview = sortedC.slice(0, 5).map(c => {
-      const vals = MONTHS.map(m => c.sales[m] || 0);
-      const jan = vals[3];
-      const prev = vals[2] > 0 ? vals[2] : (vals[1] > 0 ? vals[1] : vals[0]);
-      const trend = prev > 0 ? (jan - prev) / prev : 0;
+      const vals = months.map(m => c.sales[m] || 0);
+      const lastVal = vals[n - 1];
+      let prev = 0;
+      for (let j = n - 2; j >= 0; j--) { if (vals[j] > 0) { prev = vals[j]; break; } }
+      const trend = prev > 0 ? (lastVal - prev) / prev : 0;
       let dir = '► FLAT';
-      if (prev > 0 && jan > prev) dir = '▲ UP';
-      else if (prev > 0 && jan < prev) dir = '▼ DOWN';
-      return { name: c.name, code: c.code, oct: vals[0], nov: vals[1], dec: vals[2], jan: vals[3], avg: vals.reduce((a,b)=>a+b,0)/4, trend, dir };
+      if (prev > 0 && lastVal > prev) dir = '▲ UP';
+      else if (prev > 0 && lastVal < prev) dir = '▼ DOWN';
+      return { name: c.name, code: c.code, vals, avg: vals.reduce((a,b)=>a+b,0)/n, lastVal, trend, dir };
     });
 
     setProgress(70, 'Building Excel…');
     log('Applying formatting and styles…');
     let xlsxBlob;
     try {
-      xlsxBlob = await buildExcel(clients);
+      xlsxBlob = await buildExcel(clients, months);
     } catch (err) {
       log('Excel error: ' + err.message, 'err');
       setProgress(100, 'Error');
@@ -543,23 +581,32 @@
     }
 
     document.getElementById('statClients').textContent = clients.length;
-    document.getElementById('statTotal').textContent = fmtK(janTotal);
+    document.getElementById('statTotalLabel').textContent = 'Total ' + lastMonth + ' Sales';
+    document.getElementById('statTotal').textContent = fmtK(lastMonthTotal);
     document.getElementById('statTrend').textContent = upCount + ' / ' + downCount;
     document.getElementById('reportDate').textContent = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-    document.getElementById('downloadInfo').textContent = clients.length + ' clients · fully formatted Excel';
+    document.getElementById('downloadInfo').textContent = clients.length + ' clients · ' + months.join(', ') + ' · Excel';
+
+    // Build preview table header from detected months
+    const previewHead = document.getElementById('previewHead');
+    const monthLabels = months.map(m => m.replace(/(\d+)-(\d+)/, (_, mm, yy) => mm + '-' + yy.slice(2)));
+    previewHead.innerHTML = '<th>Client</th><th>Code</th>' +
+      monthLabels.map(l => '<th style="text-align:right">' + l + '</th>').join('') +
+      '<th style="text-align:right">Average</th><th style="text-align:right">Last Month</th><th style="text-align:center">Trend %</th><th style="text-align:center">Direction</th>';
 
     previewBody.innerHTML = '';
     preview.forEach(c => {
       const trendStr = (c.trend >= 0 ? '+' : '') + (c.trend * 100).toFixed(1) + '%';
       const dirClass = c.dir === '▲ UP' ? 'up' : c.dir === '▼ DOWN' ? 'down' : 'flat';
       const tr = document.createElement('tr');
-      tr.innerHTML = '<td>' + c.name + '</td><td style="font-family:\'DM Mono\',monospace;font-size:10px;text-align:center">' + c.code + '</td><td class="num">' + fmt(c.oct) + '</td><td class="num">' + fmt(c.nov) + '</td><td class="num">' + fmt(c.dec) + '</td><td class="num">' + fmt(c.jan) + '</td><td class="avg">' + fmt(c.avg) + '</td><td class="last">' + fmt(c.jan) + '</td><td class="' + dirClass + '">' + trendStr + '</td><td class="' + dirClass + '">' + c.dir + '</td>';
+      const monthTds = c.vals.map(v => '<td class="num">' + fmt(v) + '</td>').join('');
+      tr.innerHTML = '<td>' + c.name + '</td><td style="font-family:\'DM Mono\',monospace;font-size:10px;text-align:center">' + c.code + '</td>' + monthTds + '<td class="avg">' + fmt(c.avg) + '</td><td class="last">' + fmt(c.lastVal) + '</td><td class="' + dirClass + '">' + trendStr + '</td><td class="' + dirClass + '">' + c.dir + '</td>';
       previewBody.appendChild(tr);
     });
     if (clients.length > 5) {
       const tr = document.createElement('tr');
       tr.className = 'more-row';
-      tr.innerHTML = '<td colspan="10">+ ' + (clients.length - 5) + ' more clients in the Excel file</td>';
+      tr.innerHTML = '<td colspan="' + (6 + n) + '">+ ' + (clients.length - 5) + ' more clients in the Excel file</td>';
       previewBody.appendChild(tr);
     }
 
