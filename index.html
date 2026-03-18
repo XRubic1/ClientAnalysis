@@ -107,6 +107,13 @@
 
   @media(max-width:600px){.steps,.stats-row{grid-template-columns:1fr}.download-area{flex-direction:column}.download-btn{justify-content:center}}
 </style>
+  <script>
+    // Tailwind is only used for the new tab UI; preflight is disabled so it won't disturb
+    // the existing custom CSS styles in this file.
+    window.tailwind = window.tailwind || {};
+    window.tailwind.config = { corePlugins: { preflight: false } };
+  </script>
+  <script src="https://cdn.tailwindcss.com"></script>
 <!-- PDF.js + ExcelJS: run 100% in browser for GitHub Pages (no server) -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/exceljs@4.3.0/dist/exceljs.min.js"></script>
@@ -152,12 +159,60 @@
         <div class="stat-box"><div class="stat-label">▲ Up &nbsp;/&nbsp; ▼ Down</div><div class="stat-value" id="statTrend">—</div></div>
       </div>
       <div class="preview-section">
-        <div class="preview-label">Preview — Top 5 Clients by Average Sales</div>
-        <div class="table-wrap">
-          <table>
-            <thead><tr id="previewHead"><th>Client</th><th>Code</th></tr></thead>
-            <tbody id="previewBody"></tbody>
-          </table>
+        <div class="flex items-start justify-between gap-4 flex-wrap mb-4">
+          <div class="preview-label">Preview — Top 5 Clients by Average Sales</div>
+          <div class="flex gap-2">
+            <button
+              id="tabTopClientsBtn"
+              type="button"
+              class="px-3 py-2 rounded-lg text-xs font-semibold border border-[rgba(201,168,76,0.25)] bg-[rgba(201,168,76,0.06)] text-[var(--cream)] hover:translate-y-[-1px] transition"
+              aria-controls="tabTopClients"
+              aria-selected="true"
+            >
+              Top Clients
+            </button>
+            <button
+              id="tabBrokerConcentrationBtn"
+              type="button"
+              class="px-3 py-2 rounded-lg text-xs font-semibold border border-[rgba(255,255,255,0.10)] bg-[rgba(255,255,255,0.02)] text-[var(--text-dim)] hover:translate-y-[-1px] transition"
+              aria-controls="tabBrokerConcentration"
+              aria-selected="false"
+            >
+              Broker Concentration
+            </button>
+          </div>
+        </div>
+
+        <div id="tabTopClients" class="tab-panel">
+          <div class="table-wrap">
+            <table>
+              <thead><tr id="previewHead"><th>Client</th><th>Code</th></tr></thead>
+              <tbody id="previewBody"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="tabBrokerConcentration" class="tab-panel hidden">
+          <div class="preview-label mb-3">Broker Concentration (clients with brokers over 20%)</div>
+          <div id="brokerConcEmpty" class="hidden text-sm text-[var(--text-dim)] mb-3">
+            No brokers with concentration over 20% were found in the uploaded PDF.
+          </div>
+          <div id="brokerConcTableWrap" class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Client</th>
+                  <th style="text-align:right">Avg Sales</th>
+                  <th style="text-align:right">Last Month Sales</th>
+                  <th>Broker (Debtor)</th>
+                  <th>Debtor#</th>
+                  <th style="text-align:right">Balance</th>
+                  <th style="text-align:right">Concentration</th>
+                </tr>
+              </thead>
+              <tbody id="brokerConcBody"></tbody>
+            </table>
+          </div>
         </div>
       </div>
       <div class="download-area">
@@ -195,6 +250,60 @@
   const DEFAULT_MONTHS = ['10-2025','11-2025','12-2025','01-2026'];
   const EXCLUDE = ['TRU Funding','Client Analysis','As Of','Printed'];
   const CLIENT_RE = /^(.+?)\s+\(([A-Z0-9]+)\)\s*$/;
+
+  /**
+   * Extract "Top Debtors" rows from a page's extracted text lines.
+   *
+   * Input: array of trimmed text lines for a single PDF page.
+   * Output: [{ brokerName, debtorCode, balance, concentration }]
+   */
+  function parseTopDebtorsConcentration(lines) {
+    const startIdx = lines.findIndex(l => /top\s*debtors/i.test(l));
+    const endIdx = lines.findIndex((l, idx) => idx > startIdx && /active\s*debtors/i.test(l));
+
+    const section = (startIdx >= 0)
+      ? lines.slice(startIdx + 1, endIdx >= 0 ? endIdx : lines.length)
+      : lines;
+
+    // Rows typically end with: "<Debtor#> <Balance> <Concentration>"
+    // where Balance is like "40,660.00" and Concentration is like "6.35".
+    const rowRe = /^(.*?)\s+([A-Z0-9]{2,20})\s+([\d,]+\.\d{2})\s+(\d{1,3}\.\d+)$/i;
+
+    const out = [];
+    let buffer = '';
+
+    for (const rawLine of section) {
+      const line = rawLine.trim();
+      if (!line) continue;
+
+      // Skip obvious header fragments.
+      if (/^name$/i.test(line)) continue;
+      if (/debtors?/i.test(line) && /concentration/i.test(line)) continue;
+
+      buffer = buffer ? (buffer + ' ' + line) : line;
+
+      // Only attempt parsing when the buffer ends with "...<balance> <concentration>".
+      if (!/[\d,]+\.\d{2}\s+\d{1,3}\.\d+\s*$/.test(buffer)) continue;
+
+      const m = buffer.match(rowRe);
+      if (m) {
+        const brokerName = m[1].replace(/\s+/g, ' ').trim();
+        const debtorCode = m[2].trim();
+        const balance = parseFloat(m[3].replace(/,/g, ''));
+        const concentration = parseFloat(m[4]);
+
+        if (brokerName && debtorCode && Number.isFinite(balance) && Number.isFinite(concentration)) {
+          out.push({ brokerName, debtorCode, balance, concentration });
+        }
+        buffer = '';
+      } else if (buffer.length > 200) {
+        // Prevent accidental runaway accumulation if extraction differs.
+        buffer = '';
+      }
+    }
+
+    return out;
+  }
 
   /** Match "MM-YYYY" followed by a sales number; extract ordered unique months from report text. */
   function extractMonthsFromText(text) {
@@ -269,6 +378,8 @@
       if (detectedMonths === null) detectedMonths = extractMonthsFromText(text);
       const monthsToUse = detectedMonths;
 
+      const brokers = parseTopDebtorsConcentration(lines);
+
       const sales = {};
       for (const month of monthsToUse) {
         const escaped = month.replace(/-/g, '\\-');
@@ -276,7 +387,7 @@
         const match = text.match(re);
         sales[month] = match ? parseFloat(match[1].replace(/,/g, '')) : 0;
       }
-      clients.push({ name: clientName, code: clientCode, sales });
+      clients.push({ name: clientName, code: clientCode, sales, brokers });
     }
     return { clients, months: detectedMonths || DEFAULT_MONTHS.slice() };
   }
@@ -343,14 +454,14 @@
       const s = client.sales;
       const vals = months.map(m => s[m] || 0);
       const lastVal = vals[n - 1];
-      let prev = 0;
-      for (let j = n - 2; j >= 0; j--) { if (vals[j] > 0) { prev = vals[j]; break; } }
+      const prevMonthVal = n >= 2 ? vals[n - 2] : 0;
+      const avgLastTwo = n >= 2 ? (prevMonthVal + lastVal) / 2 : lastVal;
       let df = FL_F, dc = FL_C, arrow = '► FLAT';
-      if (prev > 0) {
-        if (lastVal > prev) { df = UP_F; dc = UP_C; arrow = '▲ UP'; }
-        else if (lastVal < prev) { df = DN_F; dc = DN_C; arrow = '▼ DOWN'; }
+      if (avgLastTwo > 0) {
+        if (lastVal > avgLastTwo) { df = UP_F; dc = UP_C; arrow = '▲ UP'; }
+        else if (lastVal < avgLastTwo) { df = DN_F; dc = DN_C; arrow = '▼ DOWN'; }
       }
-      const trend = prev > 0 ? (lastVal - prev) / prev : 0;
+      const trend = avgLastTwo > 0 ? (lastVal - avgLastTwo) / avgLastTwo : 0;
 
       const setCell = (col, val, bg, opts = {}) => {
         const c = ws.getCell(row, col);
@@ -413,7 +524,7 @@
     ws2.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF3FB' } };
     ws2.getRow(1).height = 26;
     const lastMonthLabel = months.length ? months[months.length - 1] : 'Last';
-    ['Rank','Client','Code','Average Sales', lastMonthLabel + ' Sales','vs Prev Month','Direction'].forEach((h, i) => {
+    ['Rank','Client','Code','Average Sales', lastMonthLabel + ' Sales','vs Avg (Last 2)','Direction'].forEach((h, i) => {
       const c = ws2.getCell(2, i + 1);
       c.value = h;
       c.font = { name: 'Arial', bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
@@ -432,13 +543,13 @@
       const vals = months.map(m => s[m] || 0);
       const avg = vals.reduce((a, b) => a + b, 0) / n;
       const lastVal = vals[n - 1];
-      let prev = 0;
-      for (let j = n - 2; j >= 0; j--) { if (vals[j] > 0) { prev = vals[j]; break; } }
-      const trend = prev > 0 ? (lastVal - prev) / prev : 0;
+      const prevMonthVal = n >= 2 ? vals[n - 2] : 0;
+      const avgLastTwo = n >= 2 ? (prevMonthVal + lastVal) / 2 : lastVal;
+      const trend = avgLastTwo > 0 ? (lastVal - avgLastTwo) / avgLastTwo : 0;
       let df = FL_F, dc = FL_C, arrow = '► FLAT';
-      if (prev > 0) {
-        if (lastVal > prev) { df = UP_F; dc = UP_C; arrow = '▲ UP'; }
-        else { df = DN_F; dc = DN_C; arrow = '▼ DOWN'; }
+      if (avgLastTwo > 0) {
+        if (lastVal > avgLastTwo) { df = UP_F; dc = UP_C; arrow = '▲ UP'; }
+        else if (lastVal < avgLastTwo) { df = DN_F; dc = DN_C; arrow = '▼ DOWN'; }
       }
       const set2 = (col, val, bg, opts = {}) => {
         const c = ws2.getCell(row, col);
@@ -459,6 +570,111 @@
       ws2.getRow(row).height = 18;
     });
 
+    // Sheet 3 — Broker Concentration (Top Debtors > 20%)
+    const brokerThreshold = 20;
+    const ws3 = wb.addWorksheet('Broker Concentration', { views: [{ state: 'frozen', ySplit: 3, xSplit: 3 }] });
+    ws3.mergeCells('A1:G1');
+    ws3.getCell('A1').value = 'TRU Funding LLC — Broker Concentration (Over 20%)';
+    ws3.getCell('A1').font = { name: 'Arial', bold: true, size: 13, color: { argb: 'FF' + NAVY } };
+    ws3.getCell('A1').alignment = { horizontal: 'center', vertical: 'middle' };
+    ws3.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF3FB' } };
+    ws3.getRow(1).height = 26;
+
+    ws3.mergeCells('A2:G2');
+    ws3.getCell('A2').value = 'Printed: ' + new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+    ws3.getCell('A2').font = { name: 'Arial', italic: true, size: 9, color: { argb: 'FF666666' } };
+    ws3.getCell('A2').alignment = { horizontal: 'center', vertical: 'middle' };
+    ws3.getCell('A2').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF7FBFF' } };
+    ws3.getRow(2).height = 16;
+
+    const concFmt = '0.00"%"';
+    ['Client', 'Average Sales', 'Last Month Sales', 'Broker (Debtor)', 'Debtor#', 'Balance', 'Concentration'].forEach((h, i) => {
+      const c = ws3.getCell(3, i + 1);
+      c.value = h;
+      c.font = { name: 'Arial', bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + NAVY } };
+      const align = i === 0 || i === 3 ? 'left' : i === 4 ? 'center' : 'right';
+      c.alignment = { horizontal: align, vertical: 'middle', wrapText: true };
+      c.border = { top: thin, left: thin, bottom: thin, right: thin };
+    });
+    ws3.getRow(3).height = 24;
+    [28, 16, 18, 32, 14, 16, 18].forEach((w, i) => { ws3.getColumn(i + 1).width = w; });
+
+    const eligibleByClient = new Map();
+    clients.forEach(client => {
+      const brokers = (client.brokers || []).filter(b => Number.isFinite(b.concentration) && b.concentration > brokerThreshold);
+      if (!brokers.length) return;
+      const s = client.sales;
+      const vals = months.map(m => s[m] || 0);
+      const avg = vals.reduce((a, b) => a + b, 0) / n;
+      const lastVal = vals[n - 1];
+      brokers.sort((a, b) => b.concentration - a.concentration);
+      eligibleByClient.set(client.name, { brokers, avg, lastVal });
+    });
+
+    const eligibleClients = [...eligibleByClient.keys()].sort((a, b) => a.localeCompare(b));
+    let row3 = 4;
+
+    eligibleClients.forEach(clientName => {
+      const entry = eligibleByClient.get(clientName);
+      const brokers = entry.brokers;
+      const avg = entry.avg;
+      const lastVal = entry.lastVal;
+
+      // Group header row
+      for (let col = 1; col <= 7; col++) {
+        const cell = ws3.getCell(row3, col);
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + LB } };
+        cell.border = { top: thin, left: thin, bottom: thin, right: thin };
+        cell.font = { name: 'Arial', bold: true, color: { argb: 'FF' + NAVY }, size: 10 };
+        cell.alignment = { vertical: 'middle' };
+      }
+      ws3.getCell(row3, 1).value = clientName;
+      ws3.getCell(row3, 2).value = avg;
+      ws3.getCell(row3, 3).value = lastVal;
+      ws3.getCell(row3, 2).numFmt = moneyFmt;
+      ws3.getCell(row3, 3).numFmt = moneyFmt;
+      ws3.getCell(row3, 1).alignment = { horizontal: 'left', vertical: 'middle' };
+      ws3.getCell(row3, 2).alignment = { horizontal: 'right', vertical: 'middle' };
+      ws3.getCell(row3, 3).alignment = { horizontal: 'right', vertical: 'middle' };
+      row3 += 1;
+
+      brokers.forEach(b => {
+        const cA = ws3.getCell(row3, 1); cA.value = '';
+        const cB = ws3.getCell(row3, 2); cB.value = '';
+        const cC = ws3.getCell(row3, 3); cC.value = '';
+        const cD = ws3.getCell(row3, 4); cD.value = b.brokerName;
+        const cE = ws3.getCell(row3, 5); cE.value = b.debtorCode;
+        const cF = ws3.getCell(row3, 6); cF.value = b.balance;
+        const cG = ws3.getCell(row3, 7); cG.value = b.concentration;
+
+        [cA, cB, cC, cD, cE, cF, cG].forEach(c => {
+          c.font = { name: 'Arial', size: 10, color: { argb: 'FF' + '1F1F1F' } };
+          c.border = { top: thin, left: thin, bottom: thin, right: thin };
+          c.alignment = { vertical: 'middle' };
+        });
+
+        cD.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true };
+        cE.alignment = { horizontal: 'center', vertical: 'middle' };
+        cF.alignment = { horizontal: 'right', vertical: 'middle' };
+        cG.alignment = { horizontal: 'right', vertical: 'middle' };
+        cF.numFmt = moneyFmt;
+        cG.numFmt = concFmt;
+
+        ws3.getRow(row3).height = 18;
+        row3 += 1;
+      });
+    });
+
+    if (!eligibleClients.length) {
+      ws3.mergeCells(`A4:G4`);
+      const empty = ws3.getCell('A4');
+      empty.value = 'No brokers over ' + brokerThreshold + '% concentration found in the uploaded PDF.';
+      empty.font = { name: 'Arial', italic: true, size: 10, color: { argb: 'FF666666' } };
+      empty.alignment = { horizontal: 'left', vertical: 'middle' };
+      ws3.getRow(4).height = 18;
+    }
+
     const buffer = await wb.xlsx.writeBuffer();
     return new Blob([buffer], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
   }
@@ -475,11 +691,28 @@
   const resultsArea = document.getElementById('resultsArea');
   const howSection = document.getElementById('howSection');
   const previewBody = document.getElementById('previewBody');
+  const brokerConcBody = document.getElementById('brokerConcBody');
+  const brokerConcEmpty = document.getElementById('brokerConcEmpty');
+  const brokerConcTableWrap = document.getElementById('brokerConcTableWrap');
+  const tabTopClientsBtn = document.getElementById('tabTopClientsBtn');
+  const tabBrokerConcentrationBtn = document.getElementById('tabBrokerConcentrationBtn');
+  const tabTopClients = document.getElementById('tabTopClients');
+  const tabBrokerConcentration = document.getElementById('tabBrokerConcentration');
   const downloadBtn = document.getElementById('downloadBtn');
   const resetBtn = document.getElementById('resetBtn');
 
   const fmt = n => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const fmtK = n => n >= 1e6 ? '$' + (n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? '$' + (n / 1e3).toFixed(1) + 'K' : fmt(n);
+
+  function setActiveTab(tabName) {
+    const topActive = tabName === 'top';
+
+    tabTopClients.classList.toggle('hidden', !topActive);
+    tabBrokerConcentration.classList.toggle('hidden', topActive);
+
+    tabTopClientsBtn.setAttribute('aria-selected', String(topActive));
+    tabBrokerConcentrationBtn.setAttribute('aria-selected', String(!topActive));
+  }
 
   function log(msg, type) {
     const el = document.createElement('div');
@@ -501,6 +734,7 @@
     resultsArea.style.display = 'none';
     howSection.style.display = '';
     dropArea.style.display = '';
+    setActiveTab('top');
     setProgress(0, 'Uploading…');
   }
 
@@ -510,6 +744,10 @@
   browseBtn.addEventListener('click', ev => { ev.stopPropagation(); fileInput.click(); });
   fileInput.addEventListener('change', ev => { if (ev.target.files[0]) handleFile(ev.target.files[0]); });
   resetBtn.addEventListener('click', reset);
+
+  tabTopClientsBtn.addEventListener('click', () => setActiveTab('top'));
+  tabBrokerConcentrationBtn.addEventListener('click', () => setActiveTab('broker'));
+  setActiveTab('top');
 
   async function handleFile(file) {
     if (!file || !file.name.toLowerCase().endsWith('.pdf')) {
@@ -551,21 +789,21 @@
     clients.forEach(c => {
       const vals = months.map(m => c.sales[m] || 0);
       const lastVal = vals[n - 1];
-      let prev = 0;
-      for (let j = n - 2; j >= 0; j--) { if (vals[j] > 0) { prev = vals[j]; break; } }
-      if (prev > 0) { if (lastVal > prev) upCount++; else if (lastVal < prev) downCount++; }
+      const prevMonthVal = n >= 2 ? vals[n - 2] : 0;
+      const avgLastTwo = n >= 2 ? (prevMonthVal + lastVal) / 2 : lastVal;
+      if (avgLastTwo > 0) { if (lastVal > avgLastTwo) upCount++; else if (lastVal < avgLastTwo) downCount++; }
     });
 
     const sortedC = [...clients].sort((a, b) => (months.reduce((s, m) => s + (b.sales[m] || 0), 0) / n) - (months.reduce((s, m) => s + (a.sales[m] || 0), 0) / n));
     const preview = sortedC.slice(0, 5).map(c => {
       const vals = months.map(m => c.sales[m] || 0);
       const lastVal = vals[n - 1];
-      let prev = 0;
-      for (let j = n - 2; j >= 0; j--) { if (vals[j] > 0) { prev = vals[j]; break; } }
-      const trend = prev > 0 ? (lastVal - prev) / prev : 0;
+      const prevMonthVal = n >= 2 ? vals[n - 2] : 0;
+      const avgLastTwo = n >= 2 ? (prevMonthVal + lastVal) / 2 : lastVal;
+      const trend = avgLastTwo > 0 ? (lastVal - avgLastTwo) / avgLastTwo : 0;
       let dir = '► FLAT';
-      if (prev > 0 && lastVal > prev) dir = '▲ UP';
-      else if (prev > 0 && lastVal < prev) dir = '▼ DOWN';
+      if (trend > 0) dir = '▲ UP';
+      else if (trend < 0) dir = '▼ DOWN';
       return { name: c.name, code: c.code, vals, avg: vals.reduce((a,b)=>a+b,0)/n, lastVal, trend, dir };
     });
 
@@ -608,6 +846,59 @@
       tr.className = 'more-row';
       tr.innerHTML = '<td colspan="' + (6 + n) + '">+ ' + (clients.length - 5) + ' more clients in the Excel file</td>';
       previewBody.appendChild(tr);
+    }
+
+    // ── Broker Concentration Tab (Top Debtors > 20%) ──
+    const brokerThreshold = 20;
+    brokerConcBody.innerHTML = '';
+
+    const eligibleByClient = new Map();
+    const clientSalesStatsByName = new Map();
+    clients.forEach(client => {
+      const brokers = (client.brokers || []).filter(b => Number.isFinite(b.concentration) && b.concentration > brokerThreshold);
+      if (!brokers.length) return;
+      const vals = months.map(m => client.sales[m] || 0);
+      const avg = vals.reduce((a, b) => a + b, 0) / n;
+      const lastVal = vals[n - 1];
+      brokers.sort((a, b) => b.concentration - a.concentration);
+      eligibleByClient.set(client.name, brokers);
+      clientSalesStatsByName.set(client.name, { avg, lastVal });
+    });
+
+    const eligibleClients = [...eligibleByClient.keys()].sort((a, b) => a.localeCompare(b));
+    if (!eligibleClients.length) {
+      brokerConcEmpty.classList.remove('hidden');
+      brokerConcTableWrap.classList.add('hidden');
+    } else {
+      brokerConcEmpty.classList.add('hidden');
+      brokerConcTableWrap.classList.remove('hidden');
+
+      eligibleClients.forEach(clientName => {
+        const brokers = eligibleByClient.get(clientName) || [];
+        const stats = clientSalesStatsByName.get(clientName) || { avg: 0, lastVal: 0 };
+
+        // Client group header row (shows carrier/client + avg/last next to it).
+        const groupTr = document.createElement('tr');
+        groupTr.innerHTML =
+          '<td style="background:rgba(201,168,76,0.06);font-family:\'DM Mono\',monospace;color:var(--gold);letter-spacing:.04em;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.04)">' + clientName + '</td>' +
+          '<td class="num" style="background:rgba(201,168,76,0.06);text-align:right;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.04)">' + fmt(stats.avg) + '</td>' +
+          '<td class="num" style="background:rgba(201,168,76,0.06);text-align:right;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,.04)">' + fmt(stats.lastVal) + '</td>' +
+          '<td colspan="4" style="background:rgba(201,168,76,0.06);border-bottom:1px solid rgba(255,255,255,.04)"></td>';
+        brokerConcBody.appendChild(groupTr);
+
+        brokers.forEach(b => {
+          const row = document.createElement('tr');
+          row.innerHTML =
+            '<td></td>' +
+            '<td></td>' +
+            '<td></td>' +
+            '<td style="white-space:normal;max-width:260px;">' + b.brokerName + '</td>' +
+            '<td style="font-family:\'DM Mono\',monospace;font-size:10px;text-align:center">' + b.debtorCode + '</td>' +
+            '<td class="num" style="text-align:right">' + fmt(b.balance) + '</td>' +
+            '<td class="num" style="text-align:right">' + b.concentration.toFixed(2) + '%</td>';
+          brokerConcBody.appendChild(row);
+        });
+      });
     }
 
     downloadBtn.onclick = () => {

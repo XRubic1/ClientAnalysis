@@ -50,10 +50,12 @@ def analyze():
     up_count = down_count = 0
     for c in clients:
         vals = [c['sales'].get(m, 0) for m in months]
-        jan = vals[3]; prev = vals[2] if vals[2]>0 else (vals[1] if vals[1]>0 else vals[0])
-        if prev > 0:
-            if jan > prev: up_count += 1
-            elif jan < prev: down_count += 1
+        jan = vals[3]
+        prev_month_val = vals[2]
+        avg_last_two = (jan + prev_month_val) / 2
+        if avg_last_two > 0:
+            if jan > avg_last_two: up_count += 1
+            elif jan < avg_last_two: down_count += 1
 
     # ── Preview top 5 by avg ───────────────────────────────────
     sorted_c = sorted(clients, key=lambda c: sum(c['sales'].get(m,0) for m in months)/4, reverse=True)
@@ -61,11 +63,12 @@ def analyze():
     for c in sorted_c[:5]:
         vals = [c['sales'].get(m,0) for m in months]
         avg = sum(vals)/4; jan = vals[3]
-        prev = vals[2] if vals[2]>0 else (vals[1] if vals[1]>0 else vals[0])
-        trend = (jan-prev)/prev if prev>0 else 0
+        prev_month_val = vals[2]  # last 2 months baseline
+        avg_last_two = (jan + prev_month_val) / 2
+        trend = (jan-avg_last_two)/avg_last_two if avg_last_two>0 else 0
         dir_label = '► FLAT'
-        if prev>0 and jan>prev: dir_label = '▲ UP'
-        elif prev>0 and jan<prev: dir_label = '▼ DOWN'
+        if trend > 0: dir_label = '▲ UP'
+        elif trend < 0: dir_label = '▼ DOWN'
         preview.append({'name':c['name'],'code':c['code'],
             'oct':vals[0],'nov':vals[1],'dec':vals[2],'jan':vals[3],
             'avg':avg,'trend':trend,'dir':dir_label})
@@ -128,11 +131,17 @@ def build_excel(clients):
     for i,client in enumerate(clients):
         row=i+5; alt=LGR if i%2==0 else WHITE
         s=client['sales']; vals=[s.get(m,0) for m in months]
-        jan=vals[3]; prev=vals[2] if vals[2]>0 else (vals[1] if vals[1]>0 else vals[0])
-        if prev==0: df,dc,arrow=FL_F,FL_C,"► FLAT"
-        elif jan>prev: df,dc,arrow=UP_F,UP_C,"▲ UP"
-        else: df,dc,arrow=DN_F,DN_C,"▼ DOWN"
-        trend=(jan-prev)/prev if prev>0 else 0
+        jan=vals[3]; prev_month=vals[2]
+        avg_last_two=(jan+prev_month)/2
+        trend=(jan-avg_last_two)/avg_last_two if avg_last_two>0 else 0
+        if avg_last_two==0:
+            df,dc,arrow=FL_F,FL_C,"► FLAT"
+        elif trend>0:
+            df,dc,arrow=UP_F,UP_C,"▲ UP"
+        elif trend<0:
+            df,dc,arrow=DN_F,DN_C,"▼ DOWN"
+        else:
+            df,dc,arrow=FL_F,FL_C,"► FLAT"
 
         def sc(col,val,bg,bold=False,color="000000",fmt=None,ha='left'):
             c=ws.cell(row=row,column=col,value=val)
@@ -178,7 +187,7 @@ def build_excel(clients):
     c.alignment=Alignment(horizontal='center',vertical='center')
     c.fill=PatternFill("solid",start_color="EBF3FB"); ws2.row_dimensions[1].height=26
 
-    for col,h in enumerate(["Rank","Client","Code","Average Sales","Jan-2026 Sales","vs Prev Month","Direction"],1):
+    for col,h in enumerate(["Rank","Client","Code","Average Sales","Jan-2026 Sales","vs Avg (Last 2)","Direction"],1):
         c=ws2.cell(row=2,column=col,value=h)
         c.font=Font(name="Arial",bold=True,color="FFFFFF",size=10)
         c.fill=PatternFill("solid",start_color=NAVY)
@@ -193,11 +202,17 @@ def build_excel(clients):
         row=i+3; alt=LGR if i%2==0 else WHITE
         s=client['sales']; vals=[s.get(m,0) for m in months]
         avg=sum(vals)/4; jan=vals[3]
-        prev=vals[2] if vals[2]>0 else (vals[1] if vals[1]>0 else vals[0])
-        trend=(jan-prev)/prev if prev>0 else 0
-        if prev==0: df,dc,arrow=FL_F,FL_C,"► FLAT"
-        elif jan>prev: df,dc,arrow=UP_F,UP_C,"▲ UP"
-        else: df,dc,arrow=DN_F,DN_C,"▼ DOWN"
+        prev_month=vals[2]
+        avg_last_two=(jan+prev_month)/2
+        trend=(jan-avg_last_two)/avg_last_two if avg_last_two>0 else 0
+        if avg_last_two==0:
+            df,dc,arrow=FL_F,FL_C,"► FLAT"
+        elif trend>0:
+            df,dc,arrow=UP_F,UP_C,"▲ UP"
+        elif trend<0:
+            df,dc,arrow=DN_F,DN_C,"▼ DOWN"
+        else:
+            df,dc,arrow=FL_F,FL_C,"► FLAT"
 
         def sc2(col,val,bg,bold=False,color="000000",fmt=None,ha='left'):
             c=ws2.cell(row=row,column=col,value=val)
