@@ -52,10 +52,9 @@ def analyze():
         vals = [c['sales'].get(m, 0) for m in months]
         jan = vals[3]
         prev_month_val = vals[2]
-        avg_last_two = (jan + prev_month_val) / 2
-        if avg_last_two > 0:
-            if jan > avg_last_two: up_count += 1
-            elif jan < avg_last_two: down_count += 1
+        if prev_month_val > 0:
+            if jan > prev_month_val: up_count += 1
+            elif jan < prev_month_val: down_count += 1
 
     # ── Preview top 5 by avg ───────────────────────────────────
     sorted_c = sorted(clients, key=lambda c: sum(c['sales'].get(m,0) for m in months)/4, reverse=True)
@@ -63,9 +62,8 @@ def analyze():
     for c in sorted_c[:5]:
         vals = [c['sales'].get(m,0) for m in months]
         avg = sum(vals)/4; jan = vals[3]
-        prev_month_val = vals[2]  # last 2 months baseline
-        avg_last_two = (jan + prev_month_val) / 2
-        trend = (jan-avg_last_two)/avg_last_two if avg_last_two>0 else 0
+        prev_month_val = vals[2]
+        trend = (jan - prev_month_val) / prev_month_val if prev_month_val > 0 else 0
         dir_label = '► FLAT'
         if trend > 0: dir_label = '▲ UP'
         elif trend < 0: dir_label = '▼ DOWN'
@@ -131,10 +129,10 @@ def build_excel(clients):
     for i,client in enumerate(clients):
         row=i+5; alt=LGR if i%2==0 else WHITE
         s=client['sales']; vals=[s.get(m,0) for m in months]
-        jan=vals[3]; prev_month=vals[2]
-        avg_last_two=(jan+prev_month)/2
-        trend=(jan-avg_last_two)/avg_last_two if avg_last_two>0 else 0
-        if avg_last_two==0:
+        jan=vals[3]
+        prev_month=vals[2]
+        trend=(jan-prev_month)/prev_month if prev_month>0 else 0
+        if prev_month==0:
             df,dc,arrow=FL_F,FL_C,"► FLAT"
         elif trend>0:
             df,dc,arrow=UP_F,UP_C,"▲ UP"
@@ -159,7 +157,12 @@ def build_excel(clients):
         c=ws.cell(row=row,column=9,value=f"=G{row}")
         c.font=Font(name="Arial",size=10); c.fill=PatternFill("solid",start_color=LG)
         c.alignment=Alignment(horizontal='right',vertical='center'); c.border=bdr; c.number_format=money
-        sc(10,trend,df,bold=True,color=dc,fmt='+0.0%;-0.0%;0.0%',ha='center')
+        # Trend % = (Last month − Prior month) / Prior month (columns G vs F)
+        c=ws.cell(row=row,column=10,value=f"=IF(F{row}=0,0,(G{row}-F{row})/F{row})")
+        c.font=Font(name="Arial",size=10,bold=True,color=dc)
+        c.fill=PatternFill("solid",start_color=df)
+        c.alignment=Alignment(horizontal='center',vertical='center'); c.border=bdr
+        c.number_format='+0.0%;-0.0%;0.0%'
         sc(11,arrow,df,bold=True,color=dc,ha='center')
         ws.row_dimensions[row].height=18
 
@@ -187,7 +190,7 @@ def build_excel(clients):
     c.alignment=Alignment(horizontal='center',vertical='center')
     c.fill=PatternFill("solid",start_color="EBF3FB"); ws2.row_dimensions[1].height=26
 
-    for col,h in enumerate(["Rank","Client","Code","Average Sales","Jan-2026 Sales","vs Avg (Last 2)","Direction"],1):
+    for col,h in enumerate(["Rank","Client","Code","Average Sales","Jan-2026 Sales","Trend %","Direction"],1):
         c=ws2.cell(row=2,column=col,value=h)
         c.font=Font(name="Arial",bold=True,color="FFFFFF",size=10)
         c.fill=PatternFill("solid",start_color=NAVY)
@@ -203,9 +206,8 @@ def build_excel(clients):
         s=client['sales']; vals=[s.get(m,0) for m in months]
         avg=sum(vals)/4; jan=vals[3]
         prev_month=vals[2]
-        avg_last_two=(jan+prev_month)/2
-        trend=(jan-avg_last_two)/avg_last_two if avg_last_two>0 else 0
-        if avg_last_two==0:
+        trend=(jan-prev_month)/prev_month if prev_month>0 else 0
+        if prev_month==0:
             df,dc,arrow=FL_F,FL_C,"► FLAT"
         elif trend>0:
             df,dc,arrow=UP_F,UP_C,"▲ UP"

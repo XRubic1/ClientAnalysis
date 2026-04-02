@@ -455,13 +455,12 @@
       const vals = months.map(m => s[m] || 0);
       const lastVal = vals[n - 1];
       const prevMonthVal = n >= 2 ? vals[n - 2] : 0;
-      const avgLastTwo = n >= 2 ? (prevMonthVal + lastVal) / 2 : lastVal;
+      // Trend %: (Last month − Prior month) / Prior month
       let df = FL_F, dc = FL_C, arrow = '► FLAT';
-      if (avgLastTwo > 0) {
-        if (lastVal > avgLastTwo) { df = UP_F; dc = UP_C; arrow = '▲ UP'; }
-        else if (lastVal < avgLastTwo) { df = DN_F; dc = DN_C; arrow = '▼ DOWN'; }
+      if (n >= 2 && prevMonthVal > 0) {
+        if (lastVal > prevMonthVal) { df = UP_F; dc = UP_C; arrow = '▲ UP'; }
+        else if (lastVal < prevMonthVal) { df = DN_F; dc = DN_C; arrow = '▼ DOWN'; }
       }
-      const trend = avgLastTwo > 0 ? (lastVal - avgLastTwo) / avgLastTwo : 0;
 
       const setCell = (col, val, bg, opts = {}) => {
         const c = ws.getCell(row, col);
@@ -491,7 +490,21 @@
       lastCell.alignment = { horizontal: 'right', vertical: 'middle' };
       lastCell.border = { top: thin, left: thin, bottom: thin, right: thin };
       lastCell.numFmt = moneyFmt;
-      setCell(trendCol, trend, df, { bold: true, color: dc, numFmt: '+0.0%;-0.0%;0.0%', horizontal: 'center' });
+      // Trend %: (last month − prior month) / prior month
+      const lastMonthDataL = colLetter(4 + n - 1);
+      const trendCell = ws.getCell(row, trendCol);
+      if (n >= 2) {
+        const prevL = colLetter(4 + n - 2);
+        const trendFormula = `IF(${prevL}${row}=0,0,(${lastMonthDataL}${row}-${prevL}${row})/${prevL}${row})`;
+        trendCell.value = { formula: trendFormula };
+      } else {
+        trendCell.value = 0;
+      }
+      trendCell.font = { name: 'Arial', size: 10, bold: true, color: { argb: 'FF' + dc } };
+      trendCell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF' + df } };
+      trendCell.alignment = { horizontal: 'center', vertical: 'middle' };
+      trendCell.border = { top: thin, left: thin, bottom: thin, right: thin };
+      trendCell.numFmt = '+0.0%;-0.0%;0.0%';
       setCell(dirCol, arrow, df, { bold: true, color: dc, horizontal: 'center' });
       ws.getRow(row).height = 18;
     });
@@ -524,7 +537,7 @@
     ws2.getCell('A1').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEBF3FB' } };
     ws2.getRow(1).height = 26;
     const lastMonthLabel = months.length ? months[months.length - 1] : 'Last';
-    ['Rank','Client','Code','Average Sales', lastMonthLabel + ' Sales','vs Avg (Last 2)','Direction'].forEach((h, i) => {
+    ['Rank','Client','Code','Average Sales', lastMonthLabel + ' Sales','Trend %','Direction'].forEach((h, i) => {
       const c = ws2.getCell(2, i + 1);
       c.value = h;
       c.font = { name: 'Arial', bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
@@ -544,12 +557,11 @@
       const avg = vals.reduce((a, b) => a + b, 0) / n;
       const lastVal = vals[n - 1];
       const prevMonthVal = n >= 2 ? vals[n - 2] : 0;
-      const avgLastTwo = n >= 2 ? (prevMonthVal + lastVal) / 2 : lastVal;
-      const trend = avgLastTwo > 0 ? (lastVal - avgLastTwo) / avgLastTwo : 0;
+      const trend = n >= 2 && prevMonthVal > 0 ? (lastVal - prevMonthVal) / prevMonthVal : 0;
       let df = FL_F, dc = FL_C, arrow = '► FLAT';
-      if (avgLastTwo > 0) {
-        if (lastVal > avgLastTwo) { df = UP_F; dc = UP_C; arrow = '▲ UP'; }
-        else if (lastVal < avgLastTwo) { df = DN_F; dc = DN_C; arrow = '▼ DOWN'; }
+      if (n >= 2 && prevMonthVal > 0) {
+        if (lastVal > prevMonthVal) { df = UP_F; dc = UP_C; arrow = '▲ UP'; }
+        else if (lastVal < prevMonthVal) { df = DN_F; dc = DN_C; arrow = '▼ DOWN'; }
       }
       const set2 = (col, val, bg, opts = {}) => {
         const c = ws2.getCell(row, col);
@@ -790,8 +802,10 @@
       const vals = months.map(m => c.sales[m] || 0);
       const lastVal = vals[n - 1];
       const prevMonthVal = n >= 2 ? vals[n - 2] : 0;
-      const avgLastTwo = n >= 2 ? (prevMonthVal + lastVal) / 2 : lastVal;
-      if (avgLastTwo > 0) { if (lastVal > avgLastTwo) upCount++; else if (lastVal < avgLastTwo) downCount++; }
+      if (n >= 2 && prevMonthVal > 0) {
+        if (lastVal > prevMonthVal) upCount++;
+        else if (lastVal < prevMonthVal) downCount++;
+      }
     });
 
     const sortedC = [...clients].sort((a, b) => (months.reduce((s, m) => s + (b.sales[m] || 0), 0) / n) - (months.reduce((s, m) => s + (a.sales[m] || 0), 0) / n));
@@ -799,12 +813,12 @@
       const vals = months.map(m => c.sales[m] || 0);
       const lastVal = vals[n - 1];
       const prevMonthVal = n >= 2 ? vals[n - 2] : 0;
-      const avgLastTwo = n >= 2 ? (prevMonthVal + lastVal) / 2 : lastVal;
-      const trend = avgLastTwo > 0 ? (lastVal - avgLastTwo) / avgLastTwo : 0;
+      const avg = vals.reduce((a, b) => a + b, 0) / n;
+      const trend = n >= 2 && prevMonthVal > 0 ? (lastVal - prevMonthVal) / prevMonthVal : 0;
       let dir = '► FLAT';
       if (trend > 0) dir = '▲ UP';
       else if (trend < 0) dir = '▼ DOWN';
-      return { name: c.name, code: c.code, vals, avg: vals.reduce((a,b)=>a+b,0)/n, lastVal, trend, dir };
+      return { name: c.name, code: c.code, vals, avg, lastVal, trend, dir };
     });
 
     setProgress(70, 'Building Excel…');
